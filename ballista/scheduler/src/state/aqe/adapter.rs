@@ -118,7 +118,7 @@ impl BallistaAdapter {
                     Arc::new(
                         RangeShuffleReaderExec::try_new(
                             stage_id,
-                            partitions,
+                            Arc::unwrap_or_clone(partitions),
                             schema,
                             ordering.clone(),
                         )?
@@ -127,7 +127,7 @@ impl BallistaAdapter {
                 } else {
                     Arc::new(ShuffleReaderExec::try_new(
                         stage_id,
-                        partitions,
+                        Arc::unwrap_or_clone(partitions),
                         schema,
                         partitioning,
                     )?)

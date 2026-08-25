@@ -35,6 +35,14 @@ use parking_lot::Mutex;
 use std::ops::Deref;
 use std::sync::{Arc, atomic::AtomicI64};
 
+/// A stage's resolved output locations: one entry per output partition,
+/// listing where that partition's data was written.
+///
+/// Shared, not owned. The table runs to output partitions x producing
+/// tasks, so copying it per read is measurable on the stage-completion
+/// path.
+pub type StagePartitions = Arc<Vec<Vec<PartitionLocation>>>;
+
 /// Range-partition boundaries recovered from an
 /// `UnorderedRangeRepartitionExec` / `OrderedRangeRepartitionExec` upstream
 /// of this exchange. Written after the range-repartition-producing stage
@@ -84,7 +92,7 @@ pub struct ExchangeExec {
     /// the so the len of `shuffle_partitions` vector is equal to number
     /// partitions after partitioning, the len of each vector item
     /// can not be assumed.
-    shuffle_partitions: Arc<Mutex<Option<Vec<Vec<PartitionLocation>>>>>,
+    shuffle_partitions: Arc<Mutex<Option<StagePartitions>>>,
 
     /// Per-stage coalesce decision attached to this Exchange by
     /// `CoalescePartitionsRule` before adapter conversion.
@@ -184,7 +192,7 @@ impl ExchangeExec {
         partitioning: Option<Partitioning>,
         plan_id: usize,
         stage_id: Arc<AtomicI64>,
-        stage_partitions: Arc<Mutex<Option<Vec<Vec<PartitionLocation>>>>>,
+        stage_partitions: Arc<Mutex<Option<StagePartitions>>>,
         coalesce: Arc<Mutex<Option<Arc<CoalescePlan>>>>,
         range_repartition_routing: Arc<Mutex<Option<RangeRepartitionRouting>>>,
         broadcast: bool,
@@ -242,20 +250,12 @@ impl ExchangeExec {
     ///
     /// * `partitions` - A vector of partition vectors, where each inner vector contains
     ///   the `PartitionLocation`s for a shuffle partition.
-    pub fn resolve_shuffle_partitions(&self, partitions: Vec<Vec<PartitionLocation>>) {
-        self.shuffle_partitions.lock().replace(partitions);
+    pub fn resolve_shuffle_partitions(&self, partitions: impl Into<StagePartitions>) {
+        self.shuffle_partitions.lock().replace(partitions.into());
     }
 
-    /// Checks whether the shuffle partitions have been resolved.
-    ///
-    /// Returns `true` if partitions have been resolved, indicating that the current stage
-    /// has finished and a new stage can be started. An unresolved shuffle can be replaced
-    /// with a shuffle read operation.
-    ///
-    /// # Returns
-    ///
-    /// `true` if `shuffle_partitions` contains a value, `false` otherwise.
-    pub fn shuffle_partitions(&self) -> Option<Vec<Vec<PartitionLocation>>> {
+    /// The resolved partition locations, `None` until the stage completes.
+    pub fn shuffle_partitions(&self) -> Option<StagePartitions> {
         self.shuffle_partitions.lock().clone()
     }
 
@@ -263,8 +263,10 @@ impl ExchangeExec {
     /// this method is usually used when we want to collect partitions
     /// to form a broadcast join
     pub(crate) fn shuffle_partitions_flattened(&self) -> Vec<PartitionLocation> {
-        let partitions = self.shuffle_partitions.lock().clone().unwrap_or_default();
-        partitions.into_iter().flatten().collect()
+        match self.shuffle_partitions.lock().as_deref() {
+            Some(partitions) => partitions.iter().flatten().cloned().collect(),
+            None => vec![],
+        }
     }
 
     /// sets the stage id running this exchange

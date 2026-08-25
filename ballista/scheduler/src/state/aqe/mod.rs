@@ -419,8 +419,10 @@ impl AdaptiveExecutionGraph {
             } else {
                 partitions
             };
+            // Shared with the planner; only the final stage flattens it below.
+            let partitions = Arc::new(partitions);
             self.planner
-                .resolve_stage_partitions(stage_id, partitions.clone())?;
+                .resolve_stage_partitions(stage_id, Arc::clone(&partitions))?;
 
             let (runnable, stages_to_cancel) = self.planner.actionable_stages()?;
 
@@ -442,7 +444,7 @@ impl AdaptiveExecutionGraph {
             } else {
                 // There is no more tasks to run
                 // we update output locations
-                self.output_locations = partitions.into_iter().flatten().collect();
+                self.output_locations = partitions.iter().flatten().cloned().collect();
             }
             // marking stages which need cancelling as canceled.
             // stage ids are returned for task cancellation action

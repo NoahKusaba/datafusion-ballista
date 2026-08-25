@@ -17,7 +17,7 @@
 use crate::physical_optimizer::filter_pushdown::FilterPushdown;
 use crate::state::aqe::adapter::BallistaAdapter;
 use crate::state::aqe::execution_plan::{
-    AdaptiveDatafusionExec, ExchangeExec, RangeRepartitionRouting,
+    AdaptiveDatafusionExec, ExchangeExec, RangeRepartitionRouting, StagePartitions,
 };
 use crate::state::aqe::optimizer_rule::chaos_exec::ChaosCreatingRule;
 use crate::state::aqe::optimizer_rule::{
@@ -240,8 +240,9 @@ impl AdaptivePlanner {
     pub(super) fn finalise_stage_internal(
         &mut self,
         stage_id: usize,
-        partitions: Vec<Vec<PartitionLocation>>,
+        partitions: impl Into<StagePartitions>,
     ) -> common::Result<()> {
+        let partitions = partitions.into();
         // stage has finished, stage partitions should be resolved,
         // and it has to be removed from active stages cache.
         // Removing stage is important as this will help us to
@@ -344,7 +345,7 @@ impl AdaptivePlanner {
     pub fn resolve_stage_partitions(
         &mut self,
         stage_id: usize,
-        partitions: Vec<Vec<PartitionLocation>>,
+        partitions: impl Into<StagePartitions>,
     ) -> common::Result<()> {
         self.finalise_stage_internal(stage_id, partitions)
     }

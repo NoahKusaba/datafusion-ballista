@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista_core::serde::scheduler::PartitionLocation;
+use super::StagePartitions;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::{
     common::tree_node::TreeNodeRecursion,
@@ -37,7 +37,7 @@ use std::sync::{Arc, atomic::AtomicI64};
 #[derive(Debug)]
 pub struct AdaptiveDatafusionExec {
     input: Arc<dyn ExecutionPlan>,
-    shuffle_partitions: Arc<Mutex<Option<Vec<Vec<PartitionLocation>>>>>,
+    shuffle_partitions: Arc<Mutex<Option<StagePartitions>>>,
     stage_id: Arc<AtomicI64>,
     plan_id: usize,
     pub(crate) is_final: Arc<AtomicBool>,
@@ -61,8 +61,8 @@ impl AdaptiveDatafusionExec {
     /// Changes shuffle from unresolved to resolved
     /// providing list of available partitions
     ///
-    pub fn resolve_shuffle_partitions(&self, partitions: Vec<Vec<PartitionLocation>>) {
-        self.shuffle_partitions.lock().replace(partitions);
+    pub fn resolve_shuffle_partitions(&self, partitions: impl Into<StagePartitions>) {
+        self.shuffle_partitions.lock().replace(partitions.into());
     }
 
     /// sets the stage id running this exchange

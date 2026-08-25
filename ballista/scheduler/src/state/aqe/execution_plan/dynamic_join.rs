@@ -1305,7 +1305,7 @@ mod tests {
         let exchange =
             ExchangeExec::new(input, Some(Partitioning::UnknownPartitioning(n)), 0);
 
-        let partitions = per_partition_bytes
+        let partitions: Vec<Vec<PartitionLocation>> = per_partition_bytes
             .iter()
             .enumerate()
             .map(|(idx, &bytes)| {
