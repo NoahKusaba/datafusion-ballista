@@ -257,13 +257,15 @@ impl TryInto<MetricsSet> for protobuf::OperatorMetricsSet {
 #[allow(clippy::from_over_into)]
 impl Into<ExecutorMetadata> for protobuf::ExecutorMetadata {
     fn into(self) -> ExecutorMetadata {
+        // `specification` and `os_info` are omitted by senders that only need
+        // to name and reach an executor, so default rather than unwrap.
         ExecutorMetadata {
             id: self.id,
             host: self.host,
             port: self.port as u16,
             grpc_port: self.grpc_port as u16,
-            specification: self.specification.unwrap().into(),
-            os_info: self.os_info.unwrap().into(),
+            specification: self.specification.map(Into::into).unwrap_or_default(),
+            os_info: self.os_info.map(Into::into).unwrap_or_default(),
         }
     }
 }

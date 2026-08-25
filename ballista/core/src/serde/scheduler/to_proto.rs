@@ -71,6 +71,23 @@ impl Into<protobuf::PartitionId> for PartitionId {
     }
 }
 
+/// Encodes only what a shuffle fetch addresses: which executor produced the
+/// block (`id`) and where to ask for it (`host`, `port`, `grpc_port`).
+///
+/// Executor capacity (`specification`) and machine description (`os_info`) are
+/// left off — no consumer of a decoded `PartitionLocation` reads them, and a
+/// stage holds K x M locations that every task re-encodes.
+fn shuffle_fetch_executor_meta(meta: ExecutorMetadata) -> protobuf::ExecutorMetadata {
+    protobuf::ExecutorMetadata {
+        id: meta.id,
+        host: meta.host,
+        port: meta.port as u32,
+        grpc_port: meta.grpc_port as u32,
+        specification: None,
+        os_info: None,
+    }
+}
+
 impl TryInto<protobuf::PartitionLocation> for PartitionLocation {
     type Error = BallistaError;
 
@@ -78,7 +95,7 @@ impl TryInto<protobuf::PartitionLocation> for PartitionLocation {
         Ok(protobuf::PartitionLocation {
             map_partition_id: self.map_partition_id as u32,
             partition_id: Some(self.partition_id.into()),
-            executor_meta: Some(self.executor_meta.into()),
+            executor_meta: Some(shuffle_fetch_executor_meta(self.executor_meta)),
             partition_stats: Some(self.partition_stats.into()),
             file_id: self.file_id,
             is_sort_shuffle: self.is_sort_shuffle,
@@ -310,5 +327,91 @@ impl Into<protobuf::ExecutorData> for ExecutorData {
             })
             .collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::serde::scheduler::PartitionId;
+    use prost::Message;
+
+    /// A location as the scheduler holds it: full executor metadata.
+    fn location() -> PartitionLocation {
+        PartitionLocation {
+            map_partition_id: 7,
+            partition_id: PartitionId {
+                job_id: "0b8b2a1e-1f6a-4c3d-9f2e-2b7c5d4e6f10".into(),
+                stage_id: 3,
+                partition_id: 42,
+            },
+            executor_meta: ExecutorMetadata {
+                id: "4d1c9b7a-5e2f-4a3b-8c6d-7e9f0a1b2c3d".to_string(),
+                host: "ballista-executor-17.default.svc".to_string(),
+                port: 50051,
+                grpc_port: 50052,
+                specification: ExecutorSpecification { vcores: 8 },
+                os_info: ExecutorOperatingSystemSpecification {
+                    system_name: "Ubuntu".to_string(),
+                    kernel_ver: "Linux 6.8.0-1021-aws".to_string(),
+                    os_ver: "24.04".to_string(),
+                    os_ver_long: "Linux (Ubuntu 24.04.1 LTS)".to_string(),
+                    ..Default::default()
+                },
+            },
+            partition_stats: PartitionStats::new(Some(1), Some(1), Some(1)),
+            file_id: Some(11),
+            is_sort_shuffle: true,
+        }
+    }
+
+    /// The address survives; the executor's inventory does not.
+    #[test]
+    fn encodes_address_only() {
+        let meta = TryInto::<protobuf::PartitionLocation>::try_into(location())
+            .unwrap()
+            .executor_meta
+            .unwrap();
+
+        assert_eq!(meta.id, "4d1c9b7a-5e2f-4a3b-8c6d-7e9f0a1b2c3d");
+        assert_eq!(meta.host, "ballista-executor-17.default.svc");
+        assert_eq!((meta.port, meta.grpc_port), (50051, 50052));
+        assert!(meta.specification.is_none());
+        assert!(meta.os_info.is_none());
+    }
+
+    /// Decoding survives the omission rather than panicking on it.
+    #[test]
+    fn omitted_inventory_decodes_to_defaults() {
+        let encoded: protobuf::PartitionLocation = location().try_into().unwrap();
+        let decoded: PartitionLocation = encoded.try_into().unwrap();
+
+        assert_eq!(
+            decoded.executor_meta.host,
+            "ballista-executor-17.default.svc"
+        );
+        assert_eq!(
+            decoded.executor_meta.specification,
+            ExecutorSpecification::default()
+        );
+        assert_eq!(
+            decoded.executor_meta.os_info,
+            ExecutorOperatingSystemSpecification::default()
+        );
+    }
+
+    /// The saving is what justifies the change. The fixture's OS strings are
+    /// shorter than a real `kernel_long_version()`, so this understates it.
+    #[test]
+    fn dropping_inventory_shrinks_a_location() {
+        let slim: protobuf::PartitionLocation = location().try_into().unwrap();
+        let mut fat = slim.clone();
+        fat.executor_meta = Some(location().executor_meta.into());
+
+        let (slim_len, fat_len) = (slim.encoded_len(), fat.encoded_len());
+        assert!(
+            slim_len * 3 < fat_len * 2,
+            "expected under two thirds of {fat_len} bytes, got {slim_len}"
+        );
     }
 }
