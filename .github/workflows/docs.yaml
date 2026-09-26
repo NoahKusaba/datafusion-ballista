@@ -25,6 +25,9 @@ on:
       - .asf.yaml
       - .github/workflows/docs.yaml
       - docs/**
+      # Sources the docs pull in via literalinclude.
+      - examples/examples/**
+      - ballista/core/src/object_store.rs
   # Build pull requests too, so a docs warning fails the PR instead of reaching main.
   pull_request:
     paths: *docs-paths
