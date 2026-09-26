@@ -36,8 +36,14 @@ rust-version = "1.95"
 # below become versioned.
 publish = false
 
+[package.metadata.cargo-machete]
+ignored = [
+    # not imported directly; enables arrow-schema's `serde` feature so a scan can
+    # carry its planned Arrow schema (used through datafusion) to executors
+    "arrow-schema",
+]
+
 [dependencies]
-# `serde` so a scan can carry its planned Arrow schema to executors.
 arrow-schema = { version = "59.2.0", features = ["serde"] }
 ballista-core = { path = "../../ballista/core", version = "54.0.0" }
 datafusion = { workspace = true }
