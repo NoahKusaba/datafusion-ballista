@@ -28,8 +28,10 @@
 //! - Scans, writes and metadata-table scans send their table's metadata file
 //!   and its serialized storage access (`FileIO`). An executor rebuilds exactly
 //!   the table version the plan was made against, without a catalog.
-//! - Commits, and catalog-backed tables, send the [`IcebergCatalogConfig`] so
-//!   the catalog can be rebuilt where it is needed.
+//! - Commits, and catalog-backed tables, send the [`IcebergCatalogConfig`]
+//!   their catalog was built from, so the catalog can be rebuilt where it is
+//!   needed. This crate builds every catalog it distributes (see
+//!   [`load_catalog`]), so the config sent always describes the catalog in use.
 //!
 //! Both carry credentials in plain text, so the links between client, scheduler
 //! and executors must be trusted or encrypted.
@@ -68,14 +70,15 @@
 //! # }
 //! ```
 //!
-//! Prefer these `register_*` helpers to building providers and calling
-//! `with_catalog_config` yourself. Each helper builds the catalog from the
-//! config it records, so the scheduler and the executors always use the same
-//! catalog. A hand-built provider whose catalog differs from its config raises
-//! no error: the plan is made against one catalog while the executors commit
-//! through the other.
+//! The `register_*` helpers build the catalog through [`load_catalog`]. A
+//! provider built by hand, for example with
+//! [`IcebergTableProvider::try_new`](datafusion_iceberg::IcebergTableProvider::try_new),
+//! can be distributed only if its catalog also comes from [`load_catalog`];
+//! otherwise encoding a plan over it fails, since no config describes its
+//! catalog.
 
 mod bridge;
+mod catalog;
 mod logical_codec;
 mod physical_codec;
 #[cfg(test)]
@@ -86,10 +89,10 @@ use std::sync::Arc;
 use ballista_core::extension::SessionConfigExt;
 use datafusion::common::DataFusionError;
 use datafusion::prelude::{SessionConfig, SessionContext};
-pub use datafusion_iceberg::IcebergCatalogConfig;
 use datafusion_iceberg::to_datafusion_error;
 use iceberg::{NamespaceIdent, TableIdent};
 
+pub use crate::catalog::{IcebergCatalogConfig, load_catalog};
 pub use crate::logical_codec::IcebergLogicalCodec;
 pub use crate::physical_codec::IcebergPhysicalCodec;
 
@@ -117,8 +120,8 @@ pub fn register_iceberg_codecs(config: SessionConfig) -> SessionConfig {
 /// Builds a catalog-backed [`IcebergTableProvider`](datafusion_iceberg::IcebergTableProvider)
 /// from `config` and registers it on `ctx` under `register_name`.
 ///
-/// The provider carries `config`, so the scheduler can rebuild it and executors
-/// can commit writes through the same catalog.
+/// The catalog comes from [`load_catalog`], so the scheduler can rebuild the
+/// provider and executors can commit writes through the same catalog.
 pub async fn register_iceberg_table(
     ctx: &SessionContext,
     register_name: &str,
@@ -126,11 +129,10 @@ pub async fn register_iceberg_table(
     namespace: NamespaceIdent,
     table: impl Into<String>,
 ) -> Result<(), DataFusionError> {
-    let catalog = bridge::build_catalog(&config).await?;
+    let catalog = load_catalog(&config).await?;
     let provider =
         datafusion_iceberg::IcebergTableProvider::try_new(catalog, namespace, table)
-            .await?
-            .with_catalog_config(config);
+            .await?;
     ctx.register_table(register_name, Arc::new(provider))?;
     Ok(())
 }
@@ -155,7 +157,7 @@ pub async fn register_iceberg_table_at_snapshot(
     table: impl Into<String>,
     snapshot_id: Option<i64>,
 ) -> Result<(), DataFusionError> {
-    let catalog = bridge::build_catalog(&config).await?;
+    let catalog = load_catalog(&config).await?;
     let table = catalog
         .load_table(&TableIdent::new(namespace, table.into()))
         .await
@@ -170,17 +172,15 @@ pub async fn register_iceberg_table_at_snapshot(
 /// whole Iceberg catalog at once.
 ///
 /// Every table then resolves as `<register_name>.<namespace>.<table>` in SQL,
-/// including metadata tables such as `<table>$snapshots`, and each table
-/// provider carries `config` as [`register_iceberg_table`] describes.
+/// including metadata tables such as `<table>$snapshots`, and each table can
+/// be distributed as [`register_iceberg_table`] describes.
 pub async fn register_iceberg_catalog(
     ctx: &SessionContext,
     register_name: &str,
     config: IcebergCatalogConfig,
 ) -> Result<(), DataFusionError> {
-    let catalog = bridge::build_catalog(&config).await?;
-    let provider =
-        datafusion_iceberg::IcebergCatalogProvider::try_new_with_config(catalog, config)
-            .await?;
+    let catalog = load_catalog(&config).await?;
+    let provider = datafusion_iceberg::IcebergCatalogProvider::try_new(catalog).await?;
     ctx.register_catalog(register_name, Arc::new(provider));
     Ok(())
 }

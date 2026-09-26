@@ -54,8 +54,9 @@ use uuid::Uuid;
 
 use crate::bridge::{
     Frame, TAG_DELEGATED, TableRefWire, TableWire, encode_blob, json_err, load_table_at,
-    metadata_provider, missing_table_config_err, split_frame,
+    metadata_provider, split_frame,
 };
+use crate::catalog::{catalog_config_of, unknown_catalog_err};
 
 /// Wire representation of an Iceberg physical plan node.
 // `Predicate` is not `Eq` (it can hold float literals), so this derives only
@@ -181,7 +182,6 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                 let arrow_schema = current_arrow_schema(&table_obj)?;
                 let input = single_input(inputs, "IcebergCommitExec")?;
                 let commit = IcebergCommitExec::new(table_obj, cat, input, arrow_schema)
-                    .with_catalog_config(config)
                     .with_commit_id(commit_id);
                 Ok(Arc::new(commit))
             }
@@ -220,11 +220,10 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
         }
 
         if let Some(commit) = node.downcast_ref::<IcebergCommitExec>() {
-            let config = commit
-                .catalog_config()
-                .ok_or_else(|| missing_table_config_err("IcebergCommitExec"))?;
+            let config = catalog_config_of(commit.catalog())
+                .ok_or_else(|| unknown_catalog_err("IcebergCommitExec"))?;
             let node = IcebergPhysicalNode::Commit {
-                table_ref: TableRefWire::new(config, commit.table().identifier()),
+                table_ref: TableRefWire::new(&config, commit.table().identifier()),
                 metadata_location: commit
                     .table()
                     .metadata_location_result()
@@ -685,60 +684,68 @@ mod tests {
         ));
     }
 
+    /// A commit of `table` through `catalog`, over an empty input.
+    fn commit_through(
+        catalog: Arc<dyn iceberg::Catalog>,
+        table: &Table,
+    ) -> Arc<dyn ExecutionPlan> {
+        let schema = current_arrow_schema(table).unwrap();
+        let input = Arc::new(datafusion::physical_plan::empty::EmptyExec::new(
+            schema.clone(),
+        ));
+        Arc::new(IcebergCommitExec::new(
+            table.clone(),
+            catalog,
+            input,
+            schema,
+        ))
+    }
+
+    fn encode(node: Arc<dyn ExecutionPlan>) -> Result<Vec<u8>, DataFusionError> {
+        let mut buf = Vec::new();
+        IcebergPhysicalCodec::default().try_encode(
+            node,
+            &mut buf,
+            &DefaultPhysicalProtoConverter {},
+        )?;
+        Ok(buf)
+    }
+
     #[tokio::test]
-    async fn write_and_commit_record_the_planned_metadata_file_and_commit_id() {
-        use std::collections::HashMap;
+    async fn write_and_commit_record_the_planned_version_catalog_and_commit_id() {
+        use crate::catalog::register_for_test;
 
-        use iceberg::CatalogBuilder;
-        use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
-
-        // Executors rebuild the table from this file, so a write runs against
-        // the version it was planned against rather than whatever the catalog
-        // serves when each task decodes.
-        // Only held by the commit node; never contacted.
-        let catalog = MemoryCatalogBuilder::default()
-            .load(
-                "memory",
-                HashMap::from([(
-                    MEMORY_CATALOG_WAREHOUSE.to_string(),
-                    "/test".to_string(),
-                )]),
-            )
-            .await
-            .unwrap();
+        // Executors rebuild the table from the metadata file, so a write runs
+        // against the version it was planned against rather than whatever the
+        // catalog serves when each task decodes. The commit also names the
+        // config its catalog was built from; the catalog is never contacted.
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_util::unique_catalog_config();
+        let catalog =
+            register_for_test(&config, test_util::memory_catalog(dir.path()).await);
         let table = test_util::table(&[1]);
-        let input: Arc<dyn ExecutionPlan> =
+        let write: Arc<dyn ExecutionPlan> = Arc::new(IcebergWriteExec::new(
+            table.clone(),
             Arc::new(datafusion::physical_plan::empty::EmptyExec::new(
                 current_arrow_schema(&table).unwrap(),
-            ));
-        let write: Arc<dyn ExecutionPlan> =
-            Arc::new(IcebergWriteExec::new(table.clone(), Arc::clone(&input)));
-        let commit: Arc<dyn ExecutionPlan> = Arc::new(
-            IcebergCommitExec::new(
-                table.clone(),
-                Arc::new(catalog),
-                input,
-                current_arrow_schema(&table).unwrap(),
-            )
-            .with_catalog_config(test_util::catalog_config()),
-        );
+            )),
+        ));
+        let commit = commit_through(catalog, &table);
         let planned_commit_id = commit
             .downcast_ref::<IcebergCommitExec>()
             .unwrap()
             .commit_id();
 
         for node in [write, commit] {
-            let mut buf = Vec::new();
-            IcebergPhysicalCodec::default()
-                .try_encode(node, &mut buf, &DefaultPhysicalProtoConverter {})
-                .expect("encode");
+            let buf = encode(node).expect("encode");
             let location = match serde_json::from_slice(&buf[1..]).expect("decode wire") {
                 IcebergPhysicalNode::Write { table } => table.metadata_location,
                 IcebergPhysicalNode::Commit {
+                    table_ref,
                     metadata_location,
                     commit_id,
-                    ..
                 } => {
+                    assert_eq!(table_ref.catalog, config);
                     // Every attempt at the commit must share the planned id.
                     assert_eq!(commit_id, planned_commit_id);
                     metadata_location
@@ -747,6 +754,18 @@ mod tests {
             };
             assert_eq!(location, "/test/tbl/metadata.json");
         }
+    }
+
+    /// A commit through a catalog this crate did not build has no config to
+    /// rebuild its catalog from, so it cannot be sent to an executor.
+    #[tokio::test]
+    async fn commit_through_an_unknown_catalog_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = test_util::memory_catalog(dir.path()).await;
+        let err = encode(commit_through(catalog, &test_util::table(&[1])))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("did not build"), "{err}");
     }
 
     #[test]

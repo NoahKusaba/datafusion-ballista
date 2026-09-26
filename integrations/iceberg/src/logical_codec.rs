@@ -22,8 +22,9 @@
 //! Each provider decodes back to its own type:
 //!
 //! - [`IcebergTableProvider`] is catalog-backed: it reads the table's current
-//!   state and supports `INSERT`. It travels as its
-//!   [`IcebergCatalogConfig`](crate::IcebergCatalogConfig) and table identifier.
+//!   state and supports `INSERT`. It travels as the
+//!   [`IcebergCatalogConfig`](crate::IcebergCatalogConfig) its catalog was
+//!   built from, and its table identifier.
 //! - [`IcebergStaticTableProvider`] is read-only and fixed to the table version
 //!   the client loaded, optionally at an older snapshot. Use it for time travel.
 //! - [`IcebergMetadataTableProvider`] serves metadata tables such as
@@ -52,9 +53,10 @@ use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use serde::{Deserialize, Serialize};
 
 use crate::bridge::{
-    Frame, TAG_DELEGATED, TableRefWire, TableWire, block_on, encode_blob, get_catalog,
-    json_err, metadata_provider, missing_table_config_err, split_frame, static_provider,
+    Frame, TAG_DELEGATED, TableRefWire, TableWire, block_on, encode_blob, json_err,
+    metadata_provider, split_frame, static_provider,
 };
+use crate::catalog::{catalog_config_of, get_catalog, unknown_catalog_err};
 
 /// Wire representation of an Iceberg table provider. Carries enough to rebuild
 /// either the catalog-backed data provider or a metadata-table provider on a
@@ -147,8 +149,7 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
                             get_catalog(&config)?,
                             table,
                             schema,
-                        )
-                        .with_catalog_config(config);
+                        );
                         Ok(Arc::new(provider))
                     }
                     IcebergProviderWire::Static { table, snapshot_id } => Ok(Arc::new(
@@ -170,11 +171,10 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
         buf: &mut Vec<u8>,
     ) -> Result<(), DataFusionError> {
         if let Some(provider) = node.downcast_ref::<IcebergTableProvider>() {
-            let config = provider
-                .catalog_config()
-                .ok_or_else(|| missing_table_config_err("IcebergTableProvider"))?;
+            let config = catalog_config_of(provider.catalog())
+                .ok_or_else(|| unknown_catalog_err("IcebergTableProvider"))?;
             let wire = IcebergProviderWire::Table {
-                table_ref: TableRefWire::new(config, provider.table_ident()),
+                table_ref: TableRefWire::new(&config, provider.table_ident()),
             };
             return encode_blob(buf, &wire);
         }
@@ -260,6 +260,63 @@ mod tests {
             assert_eq!(decoded.snapshot_id(), snapshot_id);
             assert_eq!(decoded.schema(), schema);
         }
+    }
+
+    /// A catalog-backed provider over a table in a fresh memory catalog, which
+    /// is registered under a config of its own when `register` is set.
+    async fn table_provider(
+        dir: &std::path::Path,
+        register: bool,
+    ) -> (IcebergTableProvider, crate::IcebergCatalogConfig) {
+        use crate::catalog::register_for_test;
+
+        let config = test_util::unique_catalog_config();
+        let mut catalog = test_util::memory_catalog(dir).await;
+        if register {
+            catalog = register_for_test(&config, catalog);
+        }
+        let ident = test_util::create_table(catalog.as_ref(), dir).await;
+        let provider = IcebergTableProvider::try_new(
+            catalog,
+            ident.namespace().clone(),
+            ident.name(),
+        )
+        .await
+        .unwrap();
+        (provider, config)
+    }
+
+    /// The scheduler rebuilds the provider on the catalog its config names,
+    /// which is the catalog the client's provider was built on.
+    #[tokio::test]
+    async fn table_provider_decodes_onto_the_catalog_its_config_built() {
+        let dir = tempfile::tempdir().unwrap();
+        let (provider, _config) = table_provider(dir.path(), true).await;
+        let catalog = provider.catalog().clone();
+        let schema = provider.schema();
+
+        let decoded = roundtrip(Arc::new(provider));
+        let decoded = decoded.downcast_ref::<IcebergTableProvider>().unwrap();
+        assert!(Arc::ptr_eq(decoded.catalog(), &catalog));
+        assert_eq!(decoded.schema(), schema);
+    }
+
+    /// A provider on a catalog this crate did not build has no config to
+    /// rebuild its catalog from, so it cannot be sent to the scheduler.
+    #[tokio::test]
+    async fn table_provider_on_an_unknown_catalog_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let (provider, _config) = table_provider(dir.path(), false).await;
+        let mut buf = Vec::new();
+        let err = IcebergLogicalCodec::default()
+            .try_encode_table_provider(
+                &TableReference::bare("t"),
+                Arc::new(provider),
+                &mut buf,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("did not build"), "{err}");
     }
 
     #[test]

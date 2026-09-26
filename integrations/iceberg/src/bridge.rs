@@ -28,10 +28,10 @@
 //!   changes and so pins the exact version planned against, and its serialized
 //!   `FileIO`, which carries the storage access the planner had. The receiving
 //!   node reads the metadata file and needs no catalog.
-//! - A catalog travels as its [`IcebergCatalogConfig`], inside a
-//!   [`TableRefWire`]. Only the nodes that talk to the catalog need one: a
-//!   commit, and the catalog-backed table provider that reloads its table on
-//!   every scan.
+//! - A catalog travels as the [`IcebergCatalogConfig`] it was built from (see
+//!   [`crate::catalog`]), inside a [`TableRefWire`]. Only the nodes that talk
+//!   to the catalog need one: a commit, and the catalog-backed table provider
+//!   that reloads its table on every scan.
 //!
 //! Rebuilding is asynchronous (metadata reads and catalog calls do I/O) but the
 //! codec entry points are synchronous, so [`block_on`] bridges the two by
@@ -39,45 +39,29 @@
 //! runtime. The tables this crate rebuilds are bound to a second one,
 //! [`TABLE_RT`], where Iceberg runs their scan planning.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use datafusion::common::DataFusionError;
 use datafusion_iceberg::{
-    IcebergCatalogConfig, IcebergMetadataTableProvider, IcebergStaticTableProvider,
-    to_datafusion_error,
+    IcebergMetadataTableProvider, IcebergStaticTableProvider, to_datafusion_error,
 };
 use iceberg::inspect::MetadataTableType;
 use iceberg::io::FileIO;
 use iceberg::spec::TableMetadata;
 use iceberg::table::Table;
 use iceberg::{Catalog, Error, ErrorKind, Runtime, TableIdent};
-use iceberg_storage_opendal::OpenDalResolvingStorageFactory;
 use serde::{Deserialize, Serialize};
+
+use crate::catalog::{IcebergCatalogConfig, evict_catalog, get_catalog};
 
 /// Converts a serde error into a [`DataFusionError`]. Deliberately concrete:
 /// Iceberg errors must go through [`to_datafusion_error`] instead, so they keep
 /// their error kind rather than collapsing into `External`.
 pub(crate) fn json_err(e: serde_json::Error) -> DataFusionError {
     DataFusionError::External(Box::new(e))
-}
-
-fn missing_config(node: &str, remedy: &str) -> DataFusionError {
-    DataFusionError::Internal(format!(
-        "{node} has no IcebergCatalogConfig and cannot be distributed; {remedy}."
-    ))
-}
-
-/// Error for a table-level node/provider that carries no
-/// [`IcebergCatalogConfig`] and therefore cannot be rebuilt on a remote node.
-pub(crate) fn missing_table_config_err(node: &str) -> DataFusionError {
-    missing_config(
-        node,
-        "register the table with IcebergTableProvider::with_catalog_config (see \
-         iceberg_ballista::register_iceberg_table)",
-    )
 }
 
 /// Dedicated process-lived runtime that runs every future [`block_on`] is
@@ -89,7 +73,7 @@ pub(crate) fn missing_table_config_err(node: &str) -> DataFusionError {
 /// already-dropped runtime, no matter which thread or test asks for it later.
 /// This work happens only while plans are encoded and decoded, so one worker is
 /// plenty; scan planning, which is heavier, runs on [`TABLE_RT`] instead.
-static CATALOG_RT: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+pub(crate) static CATALOG_RT: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .thread_name("iceberg-catalog")
@@ -157,67 +141,6 @@ where
         Ok(RuntimeFlavor::MultiThread) => tokio::task::block_in_place(wait),
         _ => wait(),
     }
-}
-
-/// Process-wide cache of reconstructed catalogs, keyed by config.
-///
-/// Building a catalog client (and its underlying HTTP/connection pool) is
-/// relatively expensive, and the codec may decode many plan nodes that share
-/// one catalog, so we cache by config. Every cached catalog lives on
-/// [`CATALOG_RT`], which never shuts down, so entries stay valid for the life
-/// of the process and can be served to any caller.
-static CATALOGS: LazyLock<Mutex<HashMap<CatalogKey, Arc<dyn Catalog>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// A [`CATALOGS`] key: a config's type, name and properties, the properties
-/// sorted so the key can be hashed.
-type CatalogKey = (String, String, BTreeMap<String, String>);
-
-fn catalog_key(config: &IcebergCatalogConfig) -> CatalogKey {
-    let props = config
-        .props
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    (config.catalog_type.clone(), config.name.clone(), props)
-}
-
-/// Builds a catalog from its config.
-///
-/// The catalog type is resolved through [`iceberg_catalog_loader`], so any
-/// catalog it supports (`rest`, `sql`, `glue`, `hms`, `s3tables`) works here.
-/// Storage is provided by [`OpenDalResolvingStorageFactory`], which picks the
-/// object-store backend (S3, GCS, Azure, local fs, …) from each file's path
-/// scheme, configured from the same `props`. So a single code path covers every
-/// catalog/storage combination the iceberg crates support.
-pub(crate) async fn build_catalog(
-    config: &IcebergCatalogConfig,
-) -> Result<Arc<dyn Catalog>, DataFusionError> {
-    iceberg_catalog_loader::load(&config.catalog_type)
-        .map_err(to_datafusion_error)?
-        .with_storage_factory(Arc::new(OpenDalResolvingStorageFactory::new()))
-        .load(config.name.clone(), config.props.clone())
-        .await
-        .map_err(to_datafusion_error)
-}
-
-/// Returns a catalog built from `config`, cached process-wide.
-pub(crate) fn get_catalog(
-    config: &IcebergCatalogConfig,
-) -> Result<Arc<dyn Catalog>, DataFusionError> {
-    let key = catalog_key(config);
-    if let Some(catalog) = CATALOGS.lock().unwrap().get(&key) {
-        return Ok(catalog.clone());
-    }
-    let catalog = block_on(build_catalog(config))?;
-    CATALOGS.lock().unwrap().insert(key, catalog.clone());
-    Ok(catalog)
-}
-
-/// Drops any cached catalog for `config`, so the next [`get_catalog`] rebuilds
-/// it — reopening connections and re-resolving credentials.
-fn evict_catalog(config: &IcebergCatalogConfig) {
-    CATALOGS.lock().unwrap().remove(&catalog_key(config));
 }
 
 /// Whether a catalog error is worth one rebuild-and-retry.
@@ -501,14 +424,6 @@ impl fmt::Debug for FileIoWire {
 mod tests {
     use super::*;
 
-    fn sample_props() -> [(String, String); 3] {
-        [
-            ("uri".to_string(), "http://localhost:8181".to_string()),
-            ("warehouse".to_string(), "s3://bucket/wh".to_string()),
-            ("s3.region".to_string(), "us-east-1".to_string()),
-        ]
-    }
-
     #[test]
     fn only_the_catch_all_error_kind_is_retryable() {
         assert!(is_retryable(&Error::new(
@@ -534,19 +449,6 @@ mod tests {
     }
 
     #[test]
-    fn evicting_an_uncached_config_is_a_noop() {
-        // The retry path evicts unconditionally, so an uncached config must not
-        // panic and poison the cache for every later decode.
-        let config = IcebergCatalogConfig::new(
-            "rest",
-            "never-cached",
-            sample_props().into_iter().collect(),
-        );
-        evict_catalog(&config);
-        evict_catalog(&config);
-    }
-
-    #[test]
     fn table_wire_debug_hides_storage_properties() {
         use iceberg::io::{FileIOBuilder, LocalFsStorageFactory};
 
@@ -561,17 +463,5 @@ mod tests {
         let debug = format!("{wire:?}");
         assert!(!debug.contains("hunter2"), "{debug}");
         assert!(debug.contains("FileIO(<redacted>)"), "{debug}");
-    }
-
-    #[test]
-    fn catalog_key_ignores_property_order() {
-        // Equal configs must share a cached catalog, however their
-        // properties happen to be ordered.
-        let forward = sample_props().into_iter().collect();
-        let reversed = sample_props().into_iter().rev().collect();
-        assert_eq!(
-            catalog_key(&IcebergCatalogConfig::new("rest", "rest", forward)),
-            catalog_key(&IcebergCatalogConfig::new("rest", "rest", reversed))
-        );
     }
 }

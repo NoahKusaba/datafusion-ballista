@@ -20,7 +20,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use datafusion_iceberg::IcebergCatalogConfig;
 use iceberg::TableIdent;
 use iceberg::io::FileIO;
 use iceberg::spec::{
@@ -30,11 +29,39 @@ use iceberg::spec::{
 use iceberg::table::Table;
 use iceberg::test_utils::test_runtime;
 
-pub(crate) fn catalog_config() -> IcebergCatalogConfig {
-    IcebergCatalogConfig::new(
+/// A config no other test uses, so a catalog registered for it in the
+/// process-wide registry is this test's alone.
+pub(crate) fn unique_catalog_config() -> crate::IcebergCatalogConfig {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    crate::IcebergCatalogConfig::new(
         "rest",
-        "rest",
+        format!("test-{}", NEXT.fetch_add(1, Ordering::Relaxed)),
         HashMap::from([("uri".to_string(), "http://localhost:8181".to_string())]),
+    )
+}
+
+/// A memory catalog whose warehouse is `dir`, storing files through
+/// [`recording_storage`].
+pub(crate) async fn memory_catalog(dir: &Path) -> std::sync::Arc<dyn iceberg::Catalog> {
+    use std::sync::Arc;
+
+    use iceberg::CatalogBuilder;
+    use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
+
+    Arc::new(
+        MemoryCatalogBuilder::default()
+            .with_storage_factory(Arc::new(recording_storage::RecordingStorageFactory))
+            .load(
+                "memory",
+                HashMap::from([(
+                    MEMORY_CATALOG_WAREHOUSE.to_string(),
+                    dir.to_str().unwrap().to_string(),
+                )]),
+            )
+            .await
+            .unwrap(),
     )
 }
 
@@ -219,30 +246,14 @@ pub(crate) mod recording_storage {
     }
 }
 
-/// Table `ns.t` with an `id` column under `dir`, stored through
-/// [`recording_storage`], after `commits` single-row INSERTs, so a scan has
-/// real data files and one manifest per commit to read.
-pub(crate) async fn table_with_rows(dir: &Path, commits: usize) -> Table {
-    use std::sync::Arc;
+/// Creates table `ns.t`, with an `id` column, in `catalog`, whose warehouse
+/// is `dir`.
+pub(crate) async fn create_table(
+    catalog: &dyn iceberg::Catalog,
+    dir: &Path,
+) -> TableIdent {
+    use iceberg::{NamespaceIdent, TableCreation};
 
-    use datafusion::prelude::SessionContext;
-    use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
-    use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation};
-
-    let warehouse = dir.to_str().unwrap().to_string();
-    let catalog: Arc<dyn Catalog> = Arc::new(
-        MemoryCatalogBuilder::default()
-            .with_storage_factory(Arc::new(recording_storage::RecordingStorageFactory))
-            .load(
-                "memory",
-                HashMap::from([(
-                    MEMORY_CATALOG_WAREHOUSE.to_string(),
-                    warehouse.clone(),
-                )]),
-            )
-            .await
-            .unwrap(),
-    );
     let namespace = NamespaceIdent::new("ns".to_string());
     catalog
         .create_namespace(&namespace, HashMap::new())
@@ -256,15 +267,27 @@ pub(crate) async fn table_with_rows(dir: &Path, commits: usize) -> Table {
         .unwrap();
     let creation = TableCreation::builder()
         .name("t".to_string())
-        .location(format!("{warehouse}/t"))
+        .location(format!("{}/t", dir.display()))
         .schema(schema)
         .build();
     catalog.create_table(&namespace, creation).await.unwrap();
+    TableIdent::new(namespace, "t".to_string())
+}
 
+/// Table `ns.t` with an `id` column under `dir`, stored through
+/// [`recording_storage`], after `commits` single-row INSERTs, so a scan has
+/// real data files and one manifest per commit to read.
+pub(crate) async fn table_with_rows(dir: &Path, commits: usize) -> Table {
+    use std::sync::Arc;
+
+    use datafusion::prelude::SessionContext;
+
+    let catalog = memory_catalog(dir).await;
+    let ident = create_table(catalog.as_ref(), dir).await;
     let provider = datafusion_iceberg::IcebergTableProvider::try_new(
         catalog.clone(),
-        namespace.clone(),
-        "t",
+        ident.namespace().clone(),
+        ident.name(),
     )
     .await
     .unwrap();
@@ -278,8 +301,5 @@ pub(crate) async fn table_with_rows(dir: &Path, commits: usize) -> Table {
             .await
             .unwrap();
     }
-    catalog
-        .load_table(&TableIdent::new(namespace, "t".to_string()))
-        .await
-        .unwrap()
+    catalog.load_table(&ident).await.unwrap()
 }

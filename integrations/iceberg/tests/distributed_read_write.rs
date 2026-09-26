@@ -60,8 +60,8 @@ use iceberg::spec::{
 use iceberg::transaction::{AddColumn, ApplyTransactionAction, Transaction};
 use iceberg::{Catalog, NamespaceIdent, TableCreation, TableIdent};
 use iceberg_ballista::{
-    IcebergCatalogConfig, register_iceberg_catalog, register_iceberg_codecs,
-    register_iceberg_table, register_iceberg_table_at_snapshot,
+    IcebergCatalogConfig, load_catalog, register_iceberg_catalog,
+    register_iceberg_codecs, register_iceberg_table, register_iceberg_table_at_snapshot,
 };
 
 use crate::fixture::IcebergFixture;
@@ -709,7 +709,10 @@ async fn distributed_time_travel_pins_snapshot_schema() {
 
     // Evolve the schema: add an `email` column. Snapshot 1 keeps referencing the
     // two-column schema, so current and historical schemas now differ.
-    let catalog: Arc<dyn Catalog> = Arc::new(fixture::rest_catalog(&props).await);
+    let catalog: Arc<dyn Catalog> =
+        load_catalog(&IcebergCatalogConfig::new("rest", "rest", props.clone()))
+            .await
+            .expect("load catalog");
     let table_ident = TableIdent::new(namespace.clone(), table_name.clone());
     let table = catalog.load_table(&table_ident).await.expect("load table");
     let tx = Transaction::new(&table);
@@ -731,8 +734,7 @@ async fn distributed_time_travel_pins_snapshot_schema() {
         table_name.clone(),
     )
     .await
-    .expect("build evolved provider")
-    .with_catalog_config(catalog_config.clone());
+    .expect("build evolved provider");
     ctx.register_table("events_v2", Arc::new(evolved))
         .expect("register evolved provider");
 
@@ -840,8 +842,7 @@ async fn distributed_time_travel_pins_snapshot_schema() {
         table_name.clone(),
     )
     .await
-    .expect("build provider after drop")
-    .with_catalog_config(catalog_config.clone());
+    .expect("build provider after drop");
     ctx.register_table("events_v3", Arc::new(dropped))
         .expect("register provider after drop");
 
@@ -987,13 +988,15 @@ async fn write_decodes_against_the_planned_table_version() {
     let table_name = "planned".to_string();
     let namespace = create_table(&props, &table_name).await;
     let table_ident = TableIdent::new(namespace.clone(), table_name.clone());
-    let catalog: Arc<dyn Catalog> = Arc::new(fixture::rest_catalog(&props).await);
+    let catalog: Arc<dyn Catalog> =
+        load_catalog(&IcebergCatalogConfig::new("rest", "rest", props.clone()))
+            .await
+            .expect("load catalog");
 
     let ctx = SessionContext::new();
     let provider = IcebergTableProvider::try_new(catalog.clone(), namespace, table_name)
         .await
-        .expect("build provider")
-        .with_catalog_config(IcebergCatalogConfig::new("rest", "rest", props));
+        .expect("build provider");
     ctx.register_table("t", Arc::new(provider))
         .expect("register provider");
 
@@ -1070,13 +1073,15 @@ async fn scan_decodes_against_the_planned_table_version() {
     let props = fixture.props();
     let table_name = "planned_read".to_string();
     let namespace = create_table(&props, &table_name).await;
-    let catalog: Arc<dyn Catalog> = Arc::new(fixture::rest_catalog(&props).await);
+    let catalog: Arc<dyn Catalog> =
+        load_catalog(&IcebergCatalogConfig::new("rest", "rest", props.clone()))
+            .await
+            .expect("load catalog");
 
     let ctx = SessionContext::new();
     let provider = IcebergTableProvider::try_new(catalog, namespace, table_name)
         .await
-        .expect("build provider")
-        .with_catalog_config(IcebergCatalogConfig::new("rest", "rest", props));
+        .expect("build provider");
     ctx.register_table("t", Arc::new(provider))
         .expect("register provider");
     run_sql(&ctx, "INSERT INTO t VALUES (1, 'alice')").await;
@@ -1239,13 +1244,15 @@ async fn rerunning_a_committed_insert_does_not_duplicate_rows() {
     let table_name = "retried".to_string();
     let namespace = create_table(&props, &table_name).await;
     let table_ident = TableIdent::new(namespace.clone(), table_name.clone());
-    let catalog: Arc<dyn Catalog> = Arc::new(fixture::rest_catalog(&props).await);
+    let catalog: Arc<dyn Catalog> =
+        load_catalog(&IcebergCatalogConfig::new("rest", "rest", props.clone()))
+            .await
+            .expect("load catalog");
 
     let ctx = SessionContext::new();
     let provider = IcebergTableProvider::try_new(catalog.clone(), namespace, table_name)
         .await
-        .expect("build provider")
-        .with_catalog_config(IcebergCatalogConfig::new("rest", "rest", props));
+        .expect("build provider");
     ctx.register_table("t", Arc::new(provider))
         .expect("register provider");
 
