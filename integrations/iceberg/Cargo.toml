@@ -76,7 +76,7 @@ tempfile = { workspace = true }
 # Starts the Iceberg REST catalog + RustFS the integration tests and the
 # examples run against. Not optional: cargo has no optional dev-dependencies,
 # so this is compiled for any `cargo test` on this crate.
-testcontainers = { version = "0.27", features = ["http_wait_plain"] }
+testcontainers = { version = "0.28", features = ["http_wait_plain"] }
 # `process` and `signal` are for the cluster-iceberg-write example, which runs
 # the scheduler and executors as child processes and reaps them on Ctrl-C.
 tokio = { workspace = true, features = [
