@@ -40,6 +40,7 @@ use super::config::SortShuffleConfig;
 use super::index::ShuffleIndex;
 use super::partitioned_batch_iterator::PartitionedBatchIterator;
 use super::spill::SpillManager;
+use super::stats::batch_used_bytes;
 use crate::JobId;
 use crate::extension::SessionConfigExt;
 use crate::serde::protobuf::ShuffleWritePartition;
@@ -148,7 +149,7 @@ fn encode_buffered_partitions(
             for result in iter {
                 let batch = result?;
                 num_rows += batch.num_rows() as u64;
-                num_bytes += batch.get_array_memory_size() as u64;
+                num_bytes += batch_used_bytes(&batch) as u64;
                 num_batches += 1;
                 writer.write(&batch)?;
             }
@@ -2426,5 +2427,107 @@ mod tests {
                 "partition assignment for row {row} differs from BatchPartitioner"
             );
         }
+    }
+
+    /// Each output partition's reported `num_bytes` are the used bytes of the
+    /// batches read back from it, whether they were spilled or kept in memory.
+    #[tokio::test]
+    async fn reported_num_bytes_are_the_used_bytes_written() -> Result<()> {
+        use super::super::reader::stream_sort_shuffle_partition;
+        use datafusion::arrow::array::{
+            AsArray, Int64Array, StringViewArray, StructArray,
+        };
+        use datafusion::arrow::datatypes::{UInt32Type, UInt64Type};
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("s", DataType::Utf8View, false),
+        ]));
+        let batches: Vec<RecordBatch> = (0..4_i64)
+            .map(|b| {
+                let keys = b * 1000..(b + 1) * 1000;
+                let strings = keys.clone().map(|k| format!("value number {k:>8}"));
+                RecordBatch::try_new(
+                    schema.clone(),
+                    vec![
+                        Arc::new(Int64Array::from_iter_values(keys)),
+                        Arc::new(StringViewArray::from_iter_values(strings)),
+                    ],
+                )
+                .unwrap()
+            })
+            .collect();
+        // An 8-byte key, a 16-byte view and a 21-byte string per row.
+        assert_eq!(
+            batches.iter().map(batch_used_bytes).sum::<usize>(),
+            4000 * 45
+        );
+
+        let num_partitions = 16;
+        for (memory_limit_per_task_bytes, expected_spills) in
+            [(BUDGET_NEVER_REACHED, false), (64 * 1024, true)]
+        {
+            let source = MemorySourceConfig::try_new(
+                std::slice::from_ref(&batches),
+                schema.clone(),
+                None,
+            )?;
+            let work_dir = TempDir::new()?;
+            let writer = SortShuffleWriterExec::try_new(
+                "stats_job".into(),
+                1,
+                Arc::new(DataSourceExec::new(Arc::new(source))),
+                work_dir.path().to_str().unwrap().to_string(),
+                Partitioning::Hash(vec![Arc::new(Column::new("k", 0))], num_partitions),
+                SortShuffleConfig::default()
+                    .with_memory_limit_per_task_bytes(memory_limit_per_task_bytes),
+            )?;
+            let task_ctx = SessionContext::new().task_ctx();
+
+            let mut reported = vec![0_u64; num_partitions];
+            for partition in 0..num_partitions {
+                let summaries: Vec<RecordBatch> = writer
+                    .execute(partition, task_ctx.clone())?
+                    .try_collect()
+                    .await?;
+                for summary in summaries {
+                    let ids = summary.column(0).as_primitive::<UInt32Type>();
+                    let stats = summary
+                        .column(3)
+                        .as_any()
+                        .downcast_ref::<StructArray>()
+                        .unwrap();
+                    let num_bytes = stats
+                        .column_by_name("num_bytes")
+                        .unwrap()
+                        .as_primitive::<UInt64Type>();
+                    for (id, bytes) in ids.values().iter().zip(num_bytes.values()) {
+                        reported[*id as usize] += bytes;
+                    }
+                }
+            }
+            let spilled = writer
+                .metrics()
+                .and_then(|m| m.sum_by_name("spill_count"))
+                .is_some_and(|v| v.as_usize() > 0);
+            assert_eq!(spilled, expected_spills);
+
+            let data_path = work_dir.path().join("stats_job/1/0/data.arrow");
+            let index_path = data_path.with_extension("arrow.index");
+            let mut read_back = vec![0_u64; num_partitions];
+            for (partition, bytes) in read_back.iter_mut().enumerate() {
+                let stream =
+                    stream_sort_shuffle_partition(&data_path, &index_path, partition)
+                        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+                let partition_batches: Vec<RecordBatch> = stream.try_collect().await?;
+                *bytes = partition_batches
+                    .iter()
+                    .map(batch_used_bytes)
+                    .sum::<usize>() as u64;
+            }
+            assert_eq!(read_back.iter().sum::<u64>(), 4000 * 45);
+            assert_eq!(reported, read_back);
+        }
+        Ok(())
     }
 }

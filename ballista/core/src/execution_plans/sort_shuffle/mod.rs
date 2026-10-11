@@ -36,6 +36,7 @@ mod multi_stream_reader;
 mod partitioned_batch_iterator;
 mod reader;
 mod spill;
+mod stats;
 mod writer;
 
 pub use buffer::BufferedBatches;
