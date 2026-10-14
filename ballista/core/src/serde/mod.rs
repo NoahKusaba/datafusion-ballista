@@ -656,6 +656,9 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 if let Some(bytes) = sort_shuffle_writer.memory_limit_per_task_bytes {
                     config = config.with_memory_limit_per_task_bytes(bytes as usize);
                 }
+                if let Some(bytes) = sort_shuffle_writer.split_on_arrival_max_bytes {
+                    config = config.with_split_on_arrival_max_bytes(bytes as usize);
+                }
 
                 Ok(Arc::new(SortShuffleWriterExec::try_new(
                     sort_shuffle_writer.job_id.clone().into(),
@@ -1126,6 +1129,9 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         batch_size: config.batch_size as u64,
                         memory_limit_per_task_bytes: Some(
                             config.memory_limit_per_task_bytes as u64,
+                        ),
+                        split_on_arrival_max_bytes: Some(
+                            config.split_on_arrival_max_bytes as u64,
                         ),
                     },
                 )),
@@ -2002,7 +2008,8 @@ mod test {
             Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 4);
 
         let config = SortShuffleConfig::new(true, 4096)
-            .with_memory_limit_per_task_bytes(1024 * 1024 * 1024);
+            .with_memory_limit_per_task_bytes(1024 * 1024 * 1024)
+            .with_split_on_arrival_max_bytes(0);
         let original = SortShuffleWriterExec::try_new(
             "job-1".to_string().into(),
             3,
@@ -2035,6 +2042,11 @@ mod test {
             decoded.config().memory_limit_per_task_bytes,
             1024 * 1024 * 1024,
             "memory limit override must survive serialization to the executor"
+        );
+        assert_eq!(
+            decoded.config().split_on_arrival_max_bytes,
+            0,
+            "a split cap of 0 must survive serialization to the executor"
         );
         assert_eq!(decoded.config().batch_size, 4096);
     }
