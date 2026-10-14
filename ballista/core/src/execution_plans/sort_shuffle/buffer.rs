@@ -151,6 +151,9 @@ impl BufferedBatches {
         let Mode::Deferred(deferred) = &mut self.mode else {
             return Ok(());
         };
+        // A batch per partition: fewer rows could not fill the partly filled
+        // batches that splitting costs, and by then the buffer already holds
+        // about `split_bytes`, measured over many batches.
         let enough_rows = self.num_partitions.saturating_mul(self.batch_size);
         if deferred.rows < enough_rows {
             return Ok(());
@@ -162,6 +165,8 @@ impl BufferedBatches {
             .num_partitions
             .saturating_mul(view_columns_with_data(&deferred.batches))
             .saturating_mul(VIEW_BLOCK_BYTES);
+        // Worst case, every partition's batch is partly filled:
+        // partitions × batch_size × row_bytes + partitions × view_columns × 1 MiB.
         let split_bytes = enough_rows
             .saturating_mul(row_bytes)
             .saturating_add(view_block_bytes);
