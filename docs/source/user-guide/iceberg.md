@@ -150,8 +150,8 @@ and executors must all set the same codecs in the same order.
   `ballista.scheduler.max_partitions_per_task` set, or when the executor has
   fewer free task slots than the union has partitions. A union of Iceberg scans
   fails with an error that suggests `SchedulerConfig::partition_sliceable_resolver`,
-  which standalone mode can't set
-  ([#2852](https://github.com/apache/datafusion-ballista/pull/2852)). A union
+  which standalone mode can't set;
+  [#2852](https://github.com/apache/datafusion-ballista/pull/2852) fixes it. A union
   whose branches each merge their input into one partition, as with an
   `ORDER BY` over the union, a `LIMIT` in a branch or aggregates without
   `GROUP BY`, returns some rows more than once, whatever the table format

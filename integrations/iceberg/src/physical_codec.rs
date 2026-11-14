@@ -96,9 +96,9 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
         else {
             return not_impl_err!("{} isn't an Iceberg scan", node.name());
         };
-        // Ballista restricts each task to its partitions only for the scans it
-        // knows, such as file scans, so each task would read every partition
-        // of this one and rows would come back duplicated.
+        // Ballista can't restrict this scan to a task's partitions, so the job
+        // would fail whenever its stage is split between tasks, which depends
+        // on how busy the cluster is. Refuse it every time instead.
         let partitions = node.output_partitioning().partition_count();
         if partitions > 1 {
             return not_impl_err!(

@@ -26,7 +26,7 @@ authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
 keywords = ["iceberg", "ballista", "datafusion", "distributed"]
 categories = ["database"]
 edition = "2024"
-# Required by the iceberg crates; Ballista itself still builds on 1.94.
+# Required by the iceberg crates.
 rust-version = "1.95"
 # crates.io rejects the git dependencies on iceberg and iceberg-datafusion.
 publish = false
