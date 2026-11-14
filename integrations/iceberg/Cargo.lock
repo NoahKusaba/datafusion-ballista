@@ -668,7 +668,7 @@ dependencies = [
 [[package]]
 name = "ballista"
 version = "55.0.0"
-source = "git+https://github.com/apache/datafusion-ballista?rev=d98720804369917151052e1c280a1dae711817fb#d98720804369917151052e1c280a1dae711817fb"
+source = "git+https://github.com/apache/datafusion-ballista?rev=2f4938ef05c38f8e68f944d6aed22f2f5714a9ed#2f4938ef05c38f8e68f944d6aed22f2f5714a9ed"
 dependencies = [
  "async-trait",
  "ballista-core",
@@ -683,7 +683,7 @@ dependencies = [
 [[package]]
 name = "ballista-api-types"
 version = "55.0.0"
-source = "git+https://github.com/apache/datafusion-ballista?rev=d98720804369917151052e1c280a1dae711817fb#d98720804369917151052e1c280a1dae711817fb"
+source = "git+https://github.com/apache/datafusion-ballista?rev=2f4938ef05c38f8e68f944d6aed22f2f5714a9ed#2f4938ef05c38f8e68f944d6aed22f2f5714a9ed"
 dependencies = [
  "serde",
  "utoipa",
@@ -692,7 +692,7 @@ dependencies = [
 [[package]]
 name = "ballista-core"
 version = "55.0.0"
-source = "git+https://github.com/apache/datafusion-ballista?rev=d98720804369917151052e1c280a1dae711817fb#d98720804369917151052e1c280a1dae711817fb"
+source = "git+https://github.com/apache/datafusion-ballista?rev=2f4938ef05c38f8e68f944d6aed22f2f5714a9ed#2f4938ef05c38f8e68f944d6aed22f2f5714a9ed"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -725,7 +725,7 @@ dependencies = [
 [[package]]
 name = "ballista-executor"
 version = "55.0.0"
-source = "git+https://github.com/apache/datafusion-ballista?rev=d98720804369917151052e1c280a1dae711817fb#d98720804369917151052e1c280a1dae711817fb"
+source = "git+https://github.com/apache/datafusion-ballista?rev=2f4938ef05c38f8e68f944d6aed22f2f5714a9ed#2f4938ef05c38f8e68f944d6aed22f2f5714a9ed"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -754,7 +754,7 @@ dependencies = [
 [[package]]
 name = "ballista-flight-sql"
 version = "55.0.0"
-source = "git+https://github.com/apache/datafusion-ballista?rev=d98720804369917151052e1c280a1dae711817fb#d98720804369917151052e1c280a1dae711817fb"
+source = "git+https://github.com/apache/datafusion-ballista?rev=2f4938ef05c38f8e68f944d6aed22f2f5714a9ed#2f4938ef05c38f8e68f944d6aed22f2f5714a9ed"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -773,7 +773,7 @@ dependencies = [
 [[package]]
 name = "ballista-history"
 version = "55.0.0"
-source = "git+https://github.com/apache/datafusion-ballista?rev=d98720804369917151052e1c280a1dae711817fb#d98720804369917151052e1c280a1dae711817fb"
+source = "git+https://github.com/apache/datafusion-ballista?rev=2f4938ef05c38f8e68f944d6aed22f2f5714a9ed#2f4938ef05c38f8e68f944d6aed22f2f5714a9ed"
 dependencies = [
  "ballista-api-types",
  "log",
@@ -811,7 +811,7 @@ dependencies = [
 [[package]]
 name = "ballista-scheduler"
 version = "55.0.0"
-source = "git+https://github.com/apache/datafusion-ballista?rev=d98720804369917151052e1c280a1dae711817fb#d98720804369917151052e1c280a1dae711817fb"
+source = "git+https://github.com/apache/datafusion-ballista?rev=2f4938ef05c38f8e68f944d6aed22f2f5714a9ed#2f4938ef05c38f8e68f944d6aed22f2f5714a9ed"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -836,6 +836,7 @@ dependencies = [
  "rand 0.10.3",
  "serde",
  "serde_json",
+ "socket2",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -3150,7 +3151,7 @@ dependencies = [
 [[package]]
 name = "iceberg-datafusion"
 version = "0.12.0"
-source = "git+https://github.com/apache/datafusion-iceberg?rev=b641e5ebe9e92967499ae7e440ba10d7797712df#b641e5ebe9e92967499ae7e440ba10d7797712df"
+source = "git+https://github.com/apache/datafusion-iceberg?rev=82cea1462bff959021b881311c9ef9f4f22328af#82cea1462bff959021b881311c9ef9f4f22328af"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4446,7 +4447,7 @@ version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "itertools 0.14.0",
  "log",
  "multimap",

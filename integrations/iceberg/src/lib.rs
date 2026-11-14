@@ -17,6 +17,8 @@
 
 //! Apache Iceberg support for Ballista.
 //!
+//! This crate is experimental. Its behavior and API may change.
+//!
 //! Ballista sends plans between nodes as bytes, so these codecs send each Iceberg
 //! table and scan as one version of the table, which any node can rebuild
 //! without a catalog. A catalog-backed table is sent as the version its catalog
@@ -58,6 +60,9 @@
 //!   the version from when it was planned.
 //! - No encrypted tables.
 //! - Storage credentials travel in plain text.
+//! - A `UNION ALL` can fail, or with an `ORDER BY` return rows more than once,
+//!   when the adaptive planner splits its stage between tasks. Disabling the
+//!   adaptive planner avoids it.
 
 mod catalog;
 #[cfg(feature = "executor")]

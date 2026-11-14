@@ -17,7 +17,7 @@
   under the License.
 -->
 
-# Apache Iceberg
+# Apache Iceberg (experimental)
 
 The `ballista-iceberg` crate (`integrations/iceberg`) lets Ballista scan
 [Apache Iceberg](https://iceberg.apache.org/) tables. On top of
@@ -32,6 +32,8 @@ on a pinned commit of Ballista rather than the crates beside it, so a
 DataFusion upgrade in Ballista that iceberg-rust doesn't support yet doesn't
 block Ballista's build or release. Build and test it from
 `integrations/iceberg`.
+
+Iceberg support is experimental. Its behavior and API may change.
 
 ## Usage
 
@@ -143,6 +145,18 @@ and executors must all set the same codecs in the same order.
 - **One task per scan.** Iceberg scans do not split into partitions yet, so one
   executor reads the whole table. Operators after the first shuffle still run
   in parallel. A scan reporting more than one partition fails to encode.
+- **A `UNION ALL` can fail or return wrong rows when the adaptive planner
+  splits its stage between tasks.** That happens with
+  `ballista.scheduler.max_partitions_per_task` set, or when the executor has
+  fewer free task slots than the union has partitions. A union of Iceberg scans
+  fails with an error that suggests `SchedulerConfig::partition_sliceable_resolver`,
+  which standalone mode can't set
+  ([#2852](https://github.com/apache/datafusion-ballista/pull/2852)). A union
+  whose branches each merge their input into one partition, as with an
+  `ORDER BY` over the union, a `LIMIT` in a branch or aggregates without
+  `GROUP BY`, returns some rows more than once, whatever the table format
+  ([#2854](https://github.com/apache/datafusion-ballista/issues/2854)). Setting
+  `ballista.planner.adaptive.enabled` to `false` avoids both.
 - **No encrypted tables.** A table with `encryption.key-id` set fails to load
   on the scheduler and executors, which have no key management client.
 - **Storage credentials travel in plain text.** Each table's serialized
