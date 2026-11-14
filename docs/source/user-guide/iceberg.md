@@ -145,8 +145,8 @@ and executors must all set the same codecs in the same order.
 - **One task per scan.** Iceberg scans do not split into partitions yet, so one
   executor reads the whole table. Operators after the first shuffle still run
   in parallel. A scan reporting more than one partition fails to encode.
-- **A `UNION ALL` can fail or return wrong rows when the adaptive planner
-  splits its stage between tasks.** That happens with
+- **A `UNION` or `UNION ALL` can fail or return wrong rows when the adaptive
+  planner splits its stage between tasks.** That happens with
   `ballista.scheduler.max_partitions_per_task` set, or when the executor has
   fewer free task slots than the union has partitions. A union of Iceberg scans
   fails with an error that suggests `SchedulerConfig::partition_sliceable_resolver`,
