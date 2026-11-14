@@ -123,12 +123,15 @@ Spark + Comet and Trino columns can be rerun with them too
 
 ## Details
 
-How the cluster was set up and how each engine was configured:
+How the cluster was set up and how each engine was configured. [Memory usage](memory.md)
+compares how much executor memory Ballista, Spark and Spark + Comet need for one
+query, measured on a smaller cluster:
 
 ```{toctree}
 :maxdepth: 1
 
 Environment <environment>
+Memory usage <memory>
 Ballista <ballista>
 Spark <spark>
 Spark + Comet <comet>
@@ -144,8 +147,11 @@ DataFusion Distributed <datafusion-distributed>
   `label` for the column heading. Copy a run's file over the column it
   replaces, leaving out anything private such as image registry names, then
   run `python3 benchmarks/cluster/publish.py`. It regenerates the table on
-  this page and the charts and speedups in the top-level README, so do not
-  edit them by hand.
+  this page, the results and headline numbers on
+  [Comparison with DataFusion Distributed](../../about/datafusion-distributed-comparison.md),
+  and the charts and speedups in the top-level README, so do not edit them by
+  hand. Check that the prose around the generated text on the comparison page
+  still agrees with the new numbers.
 - Pin the **exact commit** the numbers came from, not a branch name.
 - Replace the version, environment, config, and results tables together — a
   row that mixes numbers from different commits silently misattributes a

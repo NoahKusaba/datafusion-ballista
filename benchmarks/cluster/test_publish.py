@@ -103,6 +103,104 @@ class WithTableTest(unittest.TestCase):
             publish.with_table("no markers here\n", "new")
 
 
+def comparison(staged, pipelined, dfd):
+    ballista = {
+        "ballista_commit": "d98720804369917151052e1c280a1dae711817fb",
+        "datafusion_version": "55.2.0",
+        "iterations": 2,
+        "warmup": False,
+    }
+    return {
+        "ballista-staged": result("Ballista staged", staged, **ballista),
+        "ballista-pipelined": result("Ballista pipelined", pipelined, **ballista),
+        "datafusion-distributed": result(
+            "DataFusion Distributed",
+            dfd,
+            datafusion_distributed_commit="903502750b99839515aa8af9982f84f9c8c2ee5f",
+            datafusion_version="55",
+            iterations=3,
+            warmup=True,
+        ),
+    }
+
+
+class ComparisonResultsTest(unittest.TestCase):
+    def test_states_where_the_results_came_from_above_the_table(self):
+        self.assertEqual(
+            publish.comparison_results(comparison([4.0], [2.0], [3.0])),
+            "\n".join(
+                [
+                    "Ballista at `d9872080` (DataFusion 55.2.0), mean of 2 iterations "
+                    "including the cold first one; DataFusion Distributed at "
+                    "`90350275` (DataFusion 55), mean of 3 iterations after an "
+                    "untimed warm-up. Times in seconds; lower is better.",
+                    "",
+                    "|     Query | Ballista staged (s) | Ballista pipelined (s) "
+                    "| DataFusion Distributed (s) |",
+                    "| --------: | ------------------: | ---------------------: "
+                    "| -------------------------: |",
+                    "|         1 |                4.00 |                   2.00 "
+                    "|                       3.00 |",
+                    "| **Total** |            **4.00** |               **2.00** "
+                    "|                   **3.00** |",
+                ]
+            ),
+        )
+
+    def test_staged_and_pipelined_from_different_commits_is_an_error(self):
+        inputs = comparison([1.0], [1.0], [1.0])
+        inputs["ballista-staged"]["ballista_commit"] = "0" * 40
+        with self.assertRaises(SystemExit):
+            publish.comparison_results(inputs)
+
+
+class ComparisonFindingsTest(unittest.TestCase):
+    def test_counts_wins_and_isolates_the_widest_gap(self):
+        self.assertEqual(
+            publish.comparison_findings(
+                comparison([8.0, 8.0, 40.0], [4.0, 2.0, 2.0], [2.0, 4.0, 32.0])
+            ),
+            "\n".join(
+                [
+                    "- Pipelined Ballista was faster on 2 of the 3 queries and "
+                    "DataFusion Distributed on 1 (Q1). The geometric mean of the "
+                    "per-query ratios favours pipelined Ballista by about 2.5x.",
+                    "- The totals differ by 30.0 s, of which Q3 accounts for 30.0 s. "
+                    "Excluding Q3, the geometric mean favours pipelined Ballista by "
+                    "about 1.0x.",
+                    "- Staged Ballista took 7.00 times as long as pipelined Ballista "
+                    "in total.",
+                ]
+            ),
+        )
+
+    def test_names_datafusion_distributed_when_it_is_faster_overall(self):
+        self.assertEqual(
+            publish.comparison_findings(
+                comparison([4.0, 4.0, 4.0], [2.0, 4.0, 8.0], [1.0, 2.0, 4.0])
+            ),
+            "\n".join(
+                [
+                    "- Pipelined Ballista was faster on 0 of the 3 queries and "
+                    "DataFusion Distributed on 3 (Q1, Q2, and Q3). The geometric mean "
+                    "of the per-query ratios favours DataFusion Distributed by about "
+                    "2.0x.",
+                    "- The totals differ by 7.0 s, of which Q3 accounts for 4.0 s. "
+                    "Excluding Q3, the geometric mean favours DataFusion Distributed "
+                    "by about 2.0x.",
+                    "- Staged Ballista took 0.86 times as long as pipelined Ballista "
+                    "in total.",
+                ]
+            ),
+        )
+
+    def test_a_result_with_a_failed_query_cannot_be_compared(self):
+        inputs = comparison([1.0], [1.0], [1.0])
+        inputs["datafusion-distributed"]["queries"][0] = {"query": 1, "error": "OOM"}
+        with self.assertRaises(SystemExit):
+            publish.comparison_findings(inputs)
+
+
 class ChartSeriesTest(unittest.TestCase):
     def test_labels_are_built_from_the_labels_in_the_results(self):
         self.assertEqual(
@@ -193,6 +291,104 @@ class WithSpeedupsTest(unittest.TestCase):
     def test_a_readme_without_the_summary_is_an_error(self):
         with self.assertRaises(SystemExit):
             publish.with_speedups("no summary\n", chart_series([1.0], [1.0], [1.0]))
+
+
+def sweep_config(engine, label, runs):
+    """A memory-sweep configuration; runs are (size, status, mean, executor OOM kills)."""
+    return {
+        "name": label,
+        "engine": engine,
+        "label": label,
+        "split": "",
+        "runs": [
+            {
+                "executor_memory_gib": size,
+                "status": status,
+                "executor_oom_kills": kills,
+                **({"mean": mean, "elapsed": [mean]} if mean is not None else {}),
+                "memory_pool_gib": size * 0.7,
+            }
+            for size, status, mean, kills in runs
+        ],
+    }
+
+
+SWEEP = {
+    "query": 18,
+    "scale_factor": 1000,
+    "configs": [
+        sweep_config(
+            "ballista",
+            "Ballista",
+            [
+                (16, "ok", 130.0, 0),
+                (8, "ok", 131.0, 0),
+                (6, "ok", 360.0, 2),
+                (5, "timeout", None, 2),
+            ],
+        ),
+        sweep_config(
+            "spark",
+            "Spark, on-heap",
+            [(32, "ok", 330.0, 0), (16, "oom-killed", None, 4)],
+        ),
+        sweep_config(
+            "spark",
+            "Spark, 50% off-heap",
+            [(32, "ok", 330.0, 0), (12, "ok", 390.0, 0), (8, "oom-killed", None, 6)],
+        ),
+        sweep_config(
+            "comet", "Spark + Comet", [(32, "ok", 150.0, 0), (20, "ok", 150.0, 0)]
+        ),
+    ],
+}
+
+
+class MemorySweepTest(unittest.TestCase):
+    def test_a_pass_that_needed_restarts_is_not_clean(self):
+        summary = publish.memory_summary(SWEEP["configs"][0])
+        self.assertEqual((summary["smallest"], summary["failed"]), (8, 6))
+        self.assertEqual((summary["largest"], summary["largest_mean"]), (16, 130.0))
+
+    def test_each_engine_is_shown_by_its_smallest_configuration(self):
+        best = [c["label"] for c, _ in publish.best_configs(SWEEP)]
+        self.assertEqual(best, ["Ballista", "Spark, 50% off-heap", "Spark + Comet"])
+
+    def test_the_headline_names_each_engines_smallest_size(self):
+        self.assertEqual(
+            publish.headline(publish.best_configs(SWEEP)),
+            "Ballista finished in 8 GiB per executor, Spark needed 12 GiB and "
+            "Spark + Comet 20 GiB",
+        )
+
+    def test_tables_are_padded_the_way_prettier_aligns_them(self):
+        table = publish.markdown_table([["Name", "N"], ["ab", "10"]], [False, True])
+        self.assertEqual(table, "| Name |   N |\n| ---- | --: |\n| ab   |  10 |")
+
+    def test_the_runs_table_explains_failures_and_restarts(self):
+        table = publish.memory_runs_table(SWEEP)
+        self.assertIn("Passed after 2 executors ran out of memory", table)
+        self.assertIn("Did not finish within the time limit", table)
+        self.assertIn("Failed: an executor ran out of memory", table)
+
+    def test_bar_lengths_are_proportional_to_the_smallest_sizes(self):
+        svg = publish.smallest_chart(SWEEP)
+        ends = [
+            float(e) - 330 for e in re.findall(r'd="M330 \d+H[\d.]+Q([\d.]+) ', svg)
+        ]
+        self.assertEqual(len(ends), 4)
+        for end, size in zip(ends, [8, 32, 12, 20]):
+            self.assertAlmostEqual(end / ends[0], size / 8, places=2)
+
+    def test_end_labels_that_would_collide_are_spread_around_their_points(self):
+        self.assertEqual(publish.spread([100, 300], 30), [100, 300])
+        self.assertEqual(publish.spread([100, 110], 30), [90, 120])
+
+    def test_the_time_chart_draws_one_line_per_engine(self):
+        svg = publish.time_chart(SWEEP)
+        self.assertEqual(len(re.findall(r'<path class="line ', svg)), 3)
+        # Comet never failed, so only Ballista and Spark have a failure marked.
+        self.assertEqual(len(re.findall(r'<path class="cross (?!key)', svg)), 2)
 
 
 class PublishedResultsTest(unittest.TestCase):
